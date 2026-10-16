@@ -110,9 +110,76 @@ JOIN subjects s ON s.id = c.subject;
 ;
 
 -- Q4:
---CREATE OR REPLACE VIEW Q4(unsw_id, ug_code, pg_code) AS
---... SQL statements, possibly using other views/functions defined by you ...
---;
+--1. filter students by program
+CREATE OR REPLACE VIEW q4_ug AS
+SELECT pe.student,MAX(s.starting) as ug_fin,p.offeredby,p.code as ug_program_code 
+FROM programs p 
+JOIN program_enrolments pe 
+ON pe.program=p.id
+JOIN semesters s 
+ON s.id=pe.semester
+WHERE p.career='UG'  
+GROUP BY pe.student,pe.program,p.offeredby,p.code;
+
+CREATE OR REPLACE VIEW q4_pg AS
+SELECT pe.student,MIN(s.starting) as pg_start,p.offeredby,p.code as pg_program_code
+FROM programs p 
+JOIN program_enrolments pe 
+ON pe.program=p.id
+JOIN semesters s 
+ON s.id=pe.semester
+WHERE p.career='PG'  
+GROUP BY pe.student,pe.program,p.offeredby,p.code;
+
+CREATE OR REPLACE VIEW q4_2degree AS
+SELECT ug.student, ug.ug_program_code, pg.pg_program_code
+FROM q4_ug ug
+JOIN q4_pg pg
+  ON ug.student = pg.student
+WHERE ug.offeredby <> pg.offeredby
+  AND ug.ug_fin < pg.pg_start;
+ 
+ 
+--filter students by marks  
+CREATE OR REPLACE VIEW q4_ug_s AS
+SELECT degree.student, degree.ug_program_code
+FROM q4_2degree degree
+JOIN programs p            
+ON p.code = degree.ug_program_code
+JOIN program_enrolments pe 
+ON pe.student = degree.student AND pe.program = p.id
+JOIN courses c             
+ON c.semester = pe.semester
+JOIN course_enrolments ce  
+ON ce.course = c.id AND ce.student = degree.student
+GROUP BY degree.student, degree.ug_program_code
+HAVING COUNT(DISTINCT ce.course) FILTER (WHERE ce.mark IS NOT NULL) >= 4 AND AVG(ce.mark) > 75;
+ 
+CREATE OR REPLACE VIEW q4_pg_s AS
+SELECT degree.student, degree.pg_program_code
+FROM q4_2degree degree
+JOIN programs p            
+ON p.code = degree.pg_program_code
+JOIN program_enrolments pe 
+ON pe.student = degree.student AND pe.program = p.id
+JOIN courses c            
+ON c.semester = pe.semester
+JOIN course_enrolments ce 
+ON ce.course = c.id AND ce.student = degree.student
+GROUP BY degree.student, degree.pg_program_code
+HAVING COUNT(DISTINCT ce.course) FILTER (WHERE ce.mark IS NOT NULL) >= 4 AND AVG(ce.mark) > 70;
+
+CREATE OR REPLACE VIEW Q4(unsw_id, ug_code, pg_code) AS
+SELECT DISTINCT people.unswid as unsw_id, u.ug_program_code as ug_code, p.pg_program_code as pg_code
+FROM q4_ug_s u
+JOIN q4_pg_s p 
+ON p.student = u.student
+JOIN q4_2degree d 
+ON d.student = u.student AND d.ug_program_code = u.ug_program_code
+AND d.pg_program_code = p.pg_program_code
+JOIN people 
+ON people.id=u.student;
+
 
 -- Q5:
 --CREATE OR REPLACE VIEW Q5(program_code) AS
