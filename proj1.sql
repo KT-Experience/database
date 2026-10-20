@@ -182,9 +182,113 @@ ON people.id=u.student;
 
 
 -- Q5:
---CREATE OR REPLACE VIEW Q5(program_code) AS
---... SQL statements, possibly using other views/functions defined by you ...
---;
+
+-- 1. students who had classes in at least two 2011 semesters
+
+CREATE OR REPLACE VIEW q5_student AS
+SELECT ce.student 
+FROM course_enrolments AS ce
+JOIN courses AS c
+ON c.id = ce.course
+JOIN semesters AS se
+ON se.id = c.semester
+JOIN classes
+ON classes.course = c.id
+WHERE se.year = 2011 AND se.term IN ('X1', 'S1', 'S2')
+GROUP BY ce.student
+HAVING COUNT(DISTINCT se.term)>=2;
+
+
+-- 2. room condition
+
+CREATE OR REPLACE VIEW q5_filter_room AS
+SELECT DISTINCT a.orgunit, c.id as course
+FROM courses AS c
+JOIN semesters AS se
+ON se.id = c.semester
+JOIN course_staff cs
+ON cs.course = c.id
+JOIN affiliations a
+ON a.staff=cs.staff
+WHERE a.isprimary = 't' AND se.year = 2011 AND se.term IN ('X1', 'S1', 'S2');
+
+
+-- 3. link program 
+
+CREATE OR REPLACE VIEW q5_prog_room AS
+SELECT DISTINCT pe.program, ce.student, se.term, r.building, r.id as room
+FROM q5_student qs
+JOIN course_enrolments AS ce
+ON ce.student = qs.student
+JOIN courses AS c
+ON c.id = ce.course
+JOIN semesters AS se
+ON se.id = c.semester
+JOIN classes
+ON classes.course = c.id
+JOIN rooms r
+ON r.id = classes.room
+JOIN program_enrolments pe
+ON pe.student=ce.student AND pe.semester=c.semester
+JOIN programs p
+ON p.id=pe.program
+JOIN q5_filter_room qfr
+ON qfr.orgunit=p.offeredby AND qfr.course=c.id;
+ 
+
+-- 4.  facility condition 
+
+CREATE OR REPLACE VIEW q5_room_faci AS
+SELECT DISTINCT qpr.program, qpr.student, qpr.term, rf.facility
+FROM q5_prog_room qpr
+LEFT JOIN room_facilities rf
+ON rf.room=qpr.room;
+
+
+CREATE OR REPLACE VIEW q5_term_count AS
+SELECT qrf.program, qrf.student, COUNT(DISTINCT qrf.term) as n_terms
+FROM q5_room_faci qrf
+GROUP BY qrf.program, qrf.student;
+
+CREATE OR REPLACE VIEW q5_diff_faci AS
+SELECT DISTINCT qrf.program, qrf.student
+FROM q5_room_faci qrf
+JOIN q5_term_count qtc
+ON qtc.program=qrf.program AND qtc.student=qrf.student
+WHERE qrf.facility IS NOT NULL
+GROUP BY qrf.program, qrf.student, qrf.facility, qtc.n_terms
+HAVING COUNT(DISTINCT qrf.term)<qtc.n_terms;
+
+-- 5. building and semester condition 
+
+CREATE OR REPLACE VIEW q5_two_building AS
+SELECT qpr.program, qpr.student, qpr.term
+FROM q5_prog_room qpr
+GROUP BY qpr.program, qpr.student, qpr.term
+HAVING COUNT(DISTINCT qpr.building)>=2;
+ 
+
+CREATE OR REPLACE VIEW q5_two_semester AS
+SELECT qtb.program, qtb.student
+FROM q5_two_building qtb
+GROUP BY qtb.program, qtb.student
+HAVING COUNT(DISTINCT qtb.term)>=2;
+
+-- 6. putting all together 
+
+CREATE OR REPLACE VIEW Q5(program_code) AS
+	SELECT p.code
+	FROM (
+		SELECT qdf.program, qdf.student
+		FROM q5_diff_faci qdf
+		INTERSECT
+		SELECT qts.program, qts.student
+		FROM q5_two_semester qts
+	) qbo
+	JOIN programs p
+	ON p.id=qbo.program
+	GROUP BY p.id, p.code
+	HAVING COUNT(DISTINCT qbo.student)>=20;
 
 -- Q6:
 --CREATE OR REPLACE VIEW Q6(student_unswid, professor_unswid, num_subjects) AS
