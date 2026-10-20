@@ -290,10 +290,124 @@ CREATE OR REPLACE VIEW Q5(program_code) AS
 	GROUP BY p.id, p.code
 	HAVING COUNT(DISTINCT qbo.student)>=20;
 
+--1. A student without a stream enrolments has no first stream semester.
+
+CREATE OR REPLACE VIEW q6_filter_starting_day AS
+SELECT pe.student, MIN(starting) as starting
+FROM program_enrolments pe
+JOIN semesters s 
+ON pe.semester=s.id 
+JOIN stream_enrolments se 
+ON se.partof=pe.id 
+JOIN streams st 
+ON st.id=se.stream
+GROUP BY pe.student;
+
+CREATE OR REPLACE VIEW q6_first_stream AS
+SELECT q.student,s.id as semester
+FROM q6_filter_starting_day q
+JOIN semesters s 
+ON s.starting=q.starting; 
+
+--2. The student’s average mark before their first stream semesters is greater than 75.
+
+CREATE OR REPLACE VIEW q6_avg AS
+SELECT ce.student
+FROM q6_filter_starting_day qs 
+JOIN course_enrolments ce 
+ON ce.student=qs.student
+JOIN courses c
+ON c.id=ce.course
+JOIN semesters se 
+ON se.id=c.semester 
+WHERE se.starting<qs.starting AND ce.mark IS NOT NULL
+GROUP BY ce.student 
+HAVING AVG(ce.mark)>75;
+
+
+-- 3. The student is enrolled in at least one course for which the professor is a course lecturer.
+ 
+CREATE OR REPLACE VIEW q6_ini_pair AS
+SELECT DISTINCT ce.student, cs.staff
+FROM q6_avg qv
+JOIN course_enrolments ce
+ON ce.student=qv.student
+JOIN course_staff cs
+ON cs.course=ce.course
+JOIN staff_roles sr
+ON sr.id=cs.role
+WHERE sr.name='Course Lecturer';
+
 -- Q6:
---CREATE OR REPLACE VIEW Q6(student_unswid, professor_unswid, num_subjects) AS
---... SQL statements, possibly using other views/functions defined by you ...
---;
+
+--1. A student without a stream enrolments has no first stream semester.
+
+CREATE OR REPLACE VIEW q6_filter_starting_day AS
+SELECT pe.student, MIN(starting) as starting
+FROM program_enrolments pe
+JOIN semesters s 
+ON pe.semester=s.id 
+JOIN stream_enrolments se 
+ON se.partof=pe.id 
+JOIN streams st 
+ON st.id=se.stream
+GROUP BY pe.student;
+
+CREATE OR REPLACE VIEW q6_first_stream AS
+SELECT q.student,s.id as semester
+FROM q6_filter_starting_day q
+JOIN semesters s 
+ON s.starting=q.starting; 
+
+--2. The student’s average mark before their first stream semesters is greater than 75.
+
+CREATE OR REPLACE VIEW q6_avg AS
+SELECT ce.student
+FROM q6_filter_starting_day qs 
+JOIN course_enrolments ce 
+ON ce.student=qs.student
+JOIN courses c
+ON c.id=ce.course
+JOIN semesters se 
+ON se.id=c.semester 
+WHERE se.starting<qs.starting AND ce.mark IS NOT NULL
+GROUP BY ce.student 
+HAVING AVG(ce.mark)>75;
+
+
+-- 3. The student is enrolled in at least one course for which the professor is a course lecturer.
+ 
+CREATE OR REPLACE VIEW q6_ini_pair AS
+SELECT DISTINCT ce.student, cs.staff
+FROM q6_avg qv
+JOIN course_enrolments ce
+ON ce.student=qv.student
+JOIN course_staff cs
+ON cs.course=ce.course
+JOIN staff_roles sr
+ON sr.id=cs.role
+WHERE sr.name='Course Lecturer';
+
+--4. high-level	subjects, prof affiliation and result 
+CREATE OR REPLACE VIEW Q6(student_unswid, professor_unswid, num_subjects) AS
+SELECT ps.unswid as student_unswid, p.unswid as professor_unswid, COUNT(DISTINCT s.id) as num_subjects
+FROM q6_ini_pair qp
+JOIN affiliations a
+ON a.staff=qp.staff AND a.isprimary=TRUE
+JOIN course_enrolments ce
+ON ce.student=qp.student
+JOIN courses c
+ON c.id=ce.course
+JOIN subjects s
+ON c.subject=s.id AND s.offeredby=a.orgunit
+JOIN people as p 
+ON qp.staff=p.id 
+JOIN people as ps
+ON qp.student=ps.id
+WHERE substr(s.code, 5, 1) IN ('4', '5', '6', '7', '8', '9')
+GROUP BY ps.unswid,p.unswid
+HAVING COUNT(DISTINCT s.id)>5;
+
 
 -- Q7:
 --CREATE OR REPLACE VIEW Q7(course_id, num_students) AS
