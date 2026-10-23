@@ -722,6 +722,105 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Q10:
---CREATE OR REPLACE FUNCTION Q10(unswid integer) RETURNS SETOF text AS $$
---... SQL statements, possibly using other views/functions defined by you ...
---$$ language plpgsql;
+CREATE OR REPLACE FUNCTION Q10(unswid integer) RETURNS SETOF text AS $$
+
+DECLARE
+
+num_ce integer; 
+mean_mark numeric; 
+display_mean_mark text;
+people_id integer;
+staff_id integer; 
+staff_role_q10 integer;
+sum_num_course integer;
+sum_num_ce integer;
+sum_mean_mark numeric;
+r record; 
+display_sum_mean_mark text;
+
+BEGIN
+  -- handle id 
+  SELECT p.id INTO people_id
+  FROM people p 
+  WHERE Q10.unswid = p.unswid;
+
+  SELECT p.id INTO staff_id
+  FROM people p 
+  JOIN staff s 
+  ON s.id=p.id
+  WHERE Q10.unswid = p.unswid;
+
+  IF people_id IS NULL OR staff_id IS NULL THEN 
+    RETURN NEXT 'WARNING: Invalid Staff Input';
+    RETURN;
+  END IF;
+
+  SELECT cs.staff INTO staff_role_q10
+  FROM course_staff cs
+  WHERE cs.staff=staff_id;
+
+-- org unit & number of courses
+  FOR r IN 
+    SELECT o.id as org_id, o.longname,COUNT(DISTINCT c.id) AS num_course
+    FROM course_staff cs
+    JOIN courses c 
+    ON c.id=cs.course 
+    JOIN subjects s 
+    ON s.id=c.subject 
+    JOIN orgunits o 
+    ON o.id=s.offeredby 
+    WHERE cs.staff=staff_role_q10
+    GROUP BY o.id,o.longname
+
+  LOOP
+--course enroments & mark 
+    SELECT COUNT(ce.mark),AVG(ce.mark) INTO num_ce, mean_mark
+    FROM course_enrolments ce
+    JOIN courses c
+    ON c.id=ce.course
+    JOIN subjects s
+    ON s.id=c.subject
+    WHERE s.offeredby=r.org_id
+      AND EXISTS (
+      SELECT 1
+      FROM course_staff cs
+      WHERE cs.course=c.id AND cs.staff=staff_role_q10
+    );
+
+    IF num_ce=0 THEN 
+      display_mean_mark:='N/A';
+    ELSE
+      display_mean_mark:=round(mean_mark, 2)::text;
+    END IF;
+
+  RETURN NEXT r.longname || ' | Courses: ' || r.num_course
+            || ' | Assessed: ' || num_ce
+            || ' | Mean Mark: '
+            || display_mean_mark;
+  END LOOP;
+--summery
+
+  SELECT COUNT(DISTINCT c.id), COUNT(ce.mark), AVG(ce.mark)
+  INTO sum_num_course, sum_num_ce, sum_mean_mark
+  FROM courses c
+  LEFT JOIN course_enrolments ce
+  ON ce.course=c.id
+  WHERE EXISTS (
+    SELECT 1
+    FROM course_staff cs
+    WHERE cs.course=c.id AND cs.staff=staff_id
+  );
+
+  IF sum_num_ce=0 THEN 
+    display_sum_mean_mark:='N/A';
+  ELSE
+    display_sum_mean_mark:=round(sum_mean_mark, 2)::text;
+  END IF;
+    
+  RETURN NEXT '=== OVERALL' ||' | Courses: ' || sum_num_course
+            || ' | Assessed: ' || sum_num_ce
+            || ' | Mean Mark: '
+            || display_sum_mean_mark  || ' ===';
+  RETURN;
+END;
+$$ LANGUAGE plpgsql;
