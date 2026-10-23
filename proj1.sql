@@ -408,21 +408,318 @@ WHERE substr(s.code, 5, 1) IN ('4', '5', '6', '7', '8', '9')
 GROUP BY ps.unswid,p.unswid
 HAVING COUNT(DISTINCT s.id)>5;
 
-
 -- Q7:
---CREATE OR REPLACE VIEW Q7(course_id, num_students) AS
---... SQL statements, possibly using other views/functions defined by you ...
---;
+
+--1. 2012 course has at least one staff record 
+
+CREATE OR REPLACE VIEW q7_one_staff AS 
+SELECT c.id as course, cs.staff, c.subject,c.semester,s.starting, s.ending, s.year   
+FROM course_staff cs 
+JOIN courses c 
+ON c.id=cs.course 
+JOIN semesters s 
+ON s.id=c.semester
+WHERE s.year = 2012 AND s.term IN ('S1', 'S2');
+
+--2. new staff
+CREATE OR REPLACE VIEW q7_new_staff AS 
+SELECT DISTINCT qos.course, qos.staff
+FROM q7_one_staff qos
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM course_staff cs2
+    JOIN courses c2   ON c2.id = cs2.course
+    JOIN semesters s2 ON s2.id = c2.semester
+    WHERE cs2.staff   = qos.staff
+      AND c2.subject  = qos.subject
+      AND s2.starting < qos.starting
+);
+
+--3. half new staff 
+CREATE OR REPLACE VIEW q7_result_staff AS 
+SELECT qo.course
+FROM q7_one_staff qo
+LEFT JOIN q7_new_staff qn ON qn.course = qo.course AND qn.staff  = qo.staff
+GROUP BY qo.course
+HAVING 2 * COUNT(DISTINCT qn.staff) <= COUNT(DISTINCT qo.staff);
+
+--4. avg condition 
+CREATE OR REPLACE VIEW q7_course_subject_avg AS 
+SELECT c.subject, ce.course, MAX(sm.starting) as starting, AVG(ce.mark) as avg_mark
+FROM course_enrolments ce
+JOIN courses c    
+ON c.id = ce.course
+JOIN semesters sm 
+ON sm.id = c.semester
+WHERE ce.mark IS NOT NULL
+GROUP BY c.subject,ce.course;
+
+CREATE OR REPLACE VIEW q7_most_recent AS
+SELECT cur.course AS cur_course,    
+       cur.avg_mark AS cur_avg, 
+       prev.course   AS prev_course,
+       prev.avg_mark AS prev_avg
+FROM q7_course_subject_avg cur
+JOIN q7_course_subject_avg prev
+  ON prev.subject  = cur.subject
+ AND prev.starting < cur.starting
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM q7_course_subject_avg mid
+    WHERE mid.subject  = cur.subject
+      AND mid.starting > prev.starting
+      AND mid.starting < cur.starting
+);
+
+CREATE OR REPLACE VIEW q7_result_avg AS
+SELECT qm.cur_course AS course
+FROM q7_most_recent qm
+WHERE qm.cur_course IN (SELECT course FROM q7_one_staff)
+GROUP BY qm.cur_course, qm.cur_avg
+HAVING qm.cur_avg > AVG(qm.prev_avg);
+
+
+--5. student condition 
+CREATE OR REPLACE VIEW q7_student_result AS
+SELECT DISTINCT qo.course
+FROM q7_one_staff qo
+JOIN subjects sub
+ON sub.id=qo.subject
+JOIN course_enrolments ce1
+ON ce1.course=qo.course
+WHERE EXISTS (
+  SELECT 1
+  FROM course_enrolments ce
+  JOIN courses c
+  ON c.id=ce.course
+  JOIN semesters s
+  ON s.id=c.semester
+  JOIN program_enrolments pe
+  ON pe.student=ce.student AND pe.semester=c.semester
+  JOIN programs p
+  ON p.id=pe.program
+  WHERE s.year<2012 AND ce.mark IS NOT NULL AND c.subject=qo.subject AND p.offeredby=sub.offeredby
+);
+
+--6. lecturer condtion 
+CREATE OR REPLACE VIEW q7_lec_result AS
+SELECT DISTINCT qo.course
+FROM q7_one_staff qo
+JOIN course_staff cs 
+ON qo.course=cs.course 
+JOIN staff_roles sr 
+ON sr.id=cs.role 
+JOIN subjects sub 
+ON sub.id=qo.subject 
+WHERE sr.name = 'Course Lecturer' 
+AND EXISTS (
+    SELECT 1
+FROM course_staff cs1
+JOIN staff_roles sr1 
+ON sr1.id=cs1.role
+JOIN courses c1 
+ON c1.id=cs1.course 
+JOIN semesters s1 
+ON s1.id=c1.semester
+JOIN subjects sub1 
+ON sub1.id=c1.subject
+WHERE sr1.name = 'Course Lecturer' AND qo.starting>s1.starting AND substr(sub.code, 1, 5) = substr(sub1.code, 1, 5) AND substr(sub.code, 1, 4) = substr(sub1.code, 1, 4) AND cs.staff=cs1.staff AND qo.course !=cs1.course
+);
+
+--7. result 
+CREATE OR REPLACE VIEW Q7(course_id, num_students) AS
+SELECT ce.course as course_id, COUNT (DISTINCT ce.student) as Num_students 
+FROM (
+  SELECT course FROM q7_lec_result qlr
+  INTERSECT
+  SELECT course FROM q7_result_avg qra
+  INTERSECT
+  SELECT course FROM q7_result_staff qrs
+  INTERSECT
+  SELECT course FROM q7_student_result qsr
+) c
+JOIN course_enrolments ce 
+ON c.course=ce.course 
+GROUP BY ce.course ;
 
 -- Q8:
---CREATE OR REPLACE FUNCTION Q8(program_code character(4), year integer, term character(2)) RETURNS SETOF text AS $$
---... SQL statements, possibly using other views/functions defined by you ...
---$$ language plpgsql;
+--1. filter student
+CREATE OR REPLACE VIEW q8_students AS
+SELECT st.id AS stream_id, st.code, st.name, pe.student, pe.program, pe.semester
+FROM program_enrolments pe
+JOIN stream_enrolments se
+ON se.partof=pe.id
+JOIN streams st
+ON st.id=se.stream;
+
+--2. filter marks 
+CREATE OR REPLACE VIEW q8_marks AS
+SELECT ce.student, c.semester, ce.mark
+FROM course_enrolments ce
+JOIN courses c
+ON c.id=ce.course;
+
+--3 function 
+CREATE OR REPLACE FUNCTION Q8(program_code character(4), year integer, term character(2))
+RETURNS SETOF text
+AS $$
+DECLARE
+  p_id   integer;
+  sem_id integer;
+  r      record;
+BEGIN
+-- program id handling 
+  SELECT MIN(p.id) INTO p_id
+  FROM programs p
+  WHERE p.code=Q8.program_code;
+
+  IF p_id IS NULL THEN
+    RETURN NEXT 'WARNING: Invalid Program Input';
+    RETURN;
+  END IF;
+
+-- semester id handling 
+  SELECT MIN(s.id) INTO sem_id
+  FROM semesters s
+  WHERE s.year=Q8.year AND s.term=Q8.term;
+
+  IF sem_id IS NULL THEN
+    RETURN NEXT 'WARNING: Invalid Term Input';
+    RETURN;
+  END IF;
+
+-- core query 
+  FOR r IN
+    SELECT qs.code, qs.name,
+           COUNT(DISTINCT qs.student) AS num_students,
+           AVG(qm.mark) AS avg_mark
+    FROM q8_students qs
+    LEFT JOIN q8_marks qm
+    ON qm.student=qs.student AND qm.semester=sem_id
+    WHERE qs.program=p_id AND qs.semester=sem_id
+    GROUP BY qs.stream_id, qs.code, qs.name
+    ORDER BY num_students DESC, qs.code ASC
+  LOOP
+    RETURN NEXT r.code || ' | ' || r.name
+             || ' | Students: ' || r.num_students
+             || ' | Avg Mark: '
+             || COALESCE(round(r.avg_mark::numeric, 2)::text, 'N/A');
+  END LOOP;
+
+  RETURN;
+END;
+$$ LANGUAGE plpgsql;
+
 
 -- Q9:
---CREATE OR REPLACE FUNCTION Q9(unswid integer, year integer, term character(2)) RETURNS text AS $$
---... SQL statements, possibly using other views/functions defined by you ...
---$$ language plpgsql;
+CREATE OR REPLACE FUNCTION Q9(unswid integer, year integer, term character(2)) 
+RETURNS text AS $$
+DECLARE
+  stu_id integer;
+  sem_id integer;
+  pe_id integer;
+  s_date date;
+  uoc_total integer;
+  passed_course integer;
+  required_uoc integer;
+  display_remained_uoc text;
+  remained_course text;
+  current_program char(4);
+  remained_uoc integer;
+  display_required text;
+  program_id integer;
+
+BEGIN
+
+--check student id
+  SELECT p.id INTO stu_id
+  FROM people p
+  WHERE p.unswid=Q9.unswid;
+
+  IF stu_id IS NULL THEN
+    RETURN 'WARNING: Invalid Student Input';
+  END IF;
+
+-- filter year, term 
+  SELECT MIN(s.id) INTO sem_id
+  FROM semesters s 
+  WHERE Q9.year=s.year AND Q9.term=s.term;
+  
+  IF sem_id IS NULL THEN
+    RETURN  'WARNING: Invalid Term Input';
+  END IF;
+    
+-- filter student   
+  SELECT MIN(pe.id) INTO pe_id
+  FROM program_enrolments pe
+  WHERE pe.student=stu_id AND pe.semester=sem_id;
+  
+  IF pe_id IS NULL THEN
+    RETURN 'No program enrolment for term';
+  END IF;
+
+  SELECT p.code, pe.program INTO current_program, program_id
+  FROM program_enrolments pe
+  JOIN programs p 
+  ON p.id=pe.program
+  WHERE pe.id=pe_id;
+  
+-- Calculated UOC  
+  SELECT s.starting INTO s_date
+  FROM semesters s 
+  WHERE s.id=sem_id;
+
+  SELECT COALESCE(SUM(counting_pass.uoc), 0), COUNT(*) INTO uoc_total, passed_course
+  FROM (
+    SELECT DISTINCT c.subject, sub.uoc
+    FROM course_enrolments ce
+    JOIN courses c
+    ON c.id=ce.course
+    JOIN semesters s
+    ON s.id=c.semester
+    JOIN subjects sub
+    ON sub.id=c.subject
+    WHERE ce.student=stu_id AND s.starting<=s_date AND ce.mark>=50 AND EXISTS (
+      SELECT 1
+      FROM program_enrolments pe
+      WHERE pe.student=ce.student AND pe.semester=c.semester AND pe.program=program_id
+    )
+  ) counting_pass;
+
+ 
+ -- required UOC
+  SELECT p.uoc INTO required_uoc
+  FROM programs p
+  WHERE program_id=p.id;
+
+  IF required_uoc IS NULL THEN
+      display_remained_uoc:='N/A';
+      display_required:='N/A';
+  ELSE 
+      remained_uoc:=GREATEST(required_uoc - uoc_total, 0);
+      display_remained_uoc:=remained_uoc::text;
+      display_required:=required_uoc::text;
+
+  END IF; 
+
+  --course remaining
+  IF remained_uoc IS NULL THEN 
+    remained_course:='N/A';
+  ELSEIF remained_uoc=0 THEN
+    remained_course:='0';
+  ELSE 
+    remained_course:=ceil(remained_uoc/6.0)::integer::text;
+  END IF;
+
+RETURN current_program
+  || ' | Required: ' || display_required
+  || ' | Earned: ' || uoc_total
+  || ' | Remaining: ' || display_remained_uoc
+  || ' | Passed courses: ' || passed_course
+  || ' | Courses remaining: ' || remained_course;
+
+END;
+$$ LANGUAGE plpgsql;
 
 -- Q10:
 --CREATE OR REPLACE FUNCTION Q10(unswid integer) RETURNS SETOF text AS $$
